@@ -46,7 +46,7 @@ def ping_sweep(red_cidr):
 
     return activos
 
-# Función para escanear puertos en un host
+# Función para escanear puertos en un host (con banner grabbing)
 def port_scan(host, puertos):
     abiertos = []
     mensaje = f"\nEscaneando puertos en {host}..."
@@ -56,12 +56,20 @@ def port_scan(host, puertos):
     for puerto in puertos:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.5)
+                s.settimeout(1)
                 resultado = s.connect_ex((host, puerto))
                 servicio = puertos_nombres.get(puerto, f"Puerto {puerto}")
                 if resultado == 0:
                     mensaje = f"  [✓] {servicio} (Puerto {puerto}) abierto"
                     abiertos.append(puerto)
+
+                    # Intentar obtener banner
+                    try:
+                        banner = s.recv(1024).decode("utf-8").strip()
+                        if banner:
+                            mensaje += f" → Banner: {banner}"
+                    except:
+                        pass
                 else:
                     mensaje = f"  [✗] {servicio} (Puerto {puerto}) cerrado"
         except Exception as e:

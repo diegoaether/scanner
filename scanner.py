@@ -1,6 +1,7 @@
 import ipaddress
 import subprocess
 import socket
+import os  # Importación necesaria
 
 # Diccionario de puertos con sus nombres
 puertos_nombres = {
@@ -13,7 +14,7 @@ log_resultados = []  # Lista para almacenar resultados
 
 # Función para guardar resultados
 def guardar_resultados_en_archivo(resultados, nombre_archivo="resultados.txt"):
-    with open(nombre_archivo, "w") as archivo:
+    with open(nombre_archivo, "w", encoding="utf-8") as archivo:
         for linea in resultados:
             archivo.write(linea + "\n")
 
@@ -82,7 +83,7 @@ def port_scan(host, puertos):
 
 # Programa principal
 if __name__ == "__main__":
-    activos = ping_sweep("192.168.1.0/24")
+    activos = ping_sweep("192.168.84.0/24")
     resumen = f"\nResumen de hosts activos: {activos}"
     print(resumen)
     log_resultados.append(resumen.strip())
@@ -104,6 +105,10 @@ if __name__ == "__main__":
         nombre = input("Nombre del archivo (deja en blanco para 'resultados.txt'): ")
         if not nombre:
             nombre = "resultados.txt"
-        guardar_resultados_en_archivo(log_resultados, nombre)
-        print(f"✓ Resultados guardados en '{nombre}'")
+        
+        # Obtener ruta del script y construir ruta del archivo
+        directorio_script = os.path.dirname(__file__)
+        ruta = os.path.join(directorio_script, nombre)
 
+        guardar_resultados_en_archivo(log_resultados, ruta)
+        print(f"✓ Resultados guardados en '{ruta}'")

@@ -98,3 +98,4 @@ if __name__ == "__main__":
             nombre = "resultados.txt"
         guardar_resultados_en_archivo(log_resultados, nombre)
         print(f"✓ Resultados guardados en '{nombre}'")
+

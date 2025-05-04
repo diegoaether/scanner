@@ -2,11 +2,10 @@ import tkinter as tk
 from tkinter import scrolledtext
 import threading
 import socket
-import time
 from ipaddress import IPv4Network
-import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from scapy.all import sr1, IP, ICMP
 
+# Diccionario de puertos comunes
 ports = {
     21: 'FTP',
     22: 'SSH',
@@ -18,84 +17,106 @@ ports = {
     445: 'SMB'
 }
 
-def is_host_active(ip):
-    try:
-        result = subprocess.run(["ping", "-n", "2", "-w", "400", ip],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return result.returncode == 0
-    except Exception:
-        return False
-
+# Detección del sistema operativo por TTL
 def detect_os(ip):
+    ttl = None
     try:
-        proc = subprocess.Popen(["ping", "-n", "1", "-w", "1000", ip],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        out, _ = proc.communicate()
-        for line in out.splitlines():
-            if "TTL=" in line:
-                ttl = int(line.split("TTL=")[1])
-                if ttl <= 64:
-                    return "Linux/Unix"
-                elif ttl <= 128:
-                    return "Windows"
-                elif ttl <= 255:
-                    return "Dispositivo de red o BSD"
+        pkt = IP(dst=ip)/ICMP()
+        reply = sr1(pkt, timeout=1, verbose=0)
+        if reply:
+            ttl = reply.ttl
     except Exception:
-        pass
+        return "OS desconocido"
+
+    if ttl is not None:
+        if ttl <= 64:
+            return "Linux/Unix"
+        elif ttl <= 128:
+            return "Windows"
+        elif ttl <= 255:
+            return "Dispositivo de red o BSD"
     return "OS desconocido"
 
+# Escanear puertos con hilos
 def scan_host(ip):
-    host_data = {"ip": ip, "puertos": {}}
-    for port in ports:
+    host_data = {"ip": ip, "puertos": {}, "os": "OS desconocido"}
+    threads = []
+
+    def scan_port(port):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.5)
+                s.settimeout(0.3)
                 result = s.connect_ex((ip, port))
                 host_data["puertos"][port] = result == 0
         except Exception:
             host_data["puertos"][port] = False
+
+    for port in ports:
+        t = threading.Thread(target=scan_port, args=(port,))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
     host_data["os"] = detect_os(ip)
     return host_data
 
-def check_host(host_ip):
-    return host_ip if is_host_active(host_ip) else None
-
+# Escaneo completo de red con hilos para hosts
 def scan_network(ip, mask, output):
     try:
         output.insert(tk.END, f"Escaneando red: {ip}/{mask}\n")
         output.see(tk.END)
-        network = IPv4Network((ip, mask), strict=False)
-
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            futures = {executor.submit(check_host, str(host)): str(host) for host in network.hosts()}
-
+        network = IPv4Network(f"{ip}/{mask}", strict=False)
         active_hosts = []
-        inactive_hosts = []
 
-        for future in futures:
-            host_ip = futures[future]
-            if future.result():
-                output.insert(tk.END, f"Host: {host_ip} - ACTIVO\n")
-                active_hosts.append(host_ip)
-            else:
-                output.insert(tk.END, f"Host: {host_ip} - NO ACTIVO\n")
-                inactive_hosts.append(host_ip)
-            output.see(tk.END)
-            output.update_idletasks()
-            time.sleep(0.03)  # ← Pausa para dar tiempo a visualizar
+        lock = threading.Lock()
+
+        def check_host(host_ip):
+            pkt = IP(dst=host_ip)/ICMP()
+            reply = sr1(pkt, timeout=0.5, verbose=0)
+            with lock:
+                if reply:
+                    output.insert(tk.END, f"Host: {host_ip} - ACTIVO\n")
+                    active_hosts.append(host_ip)
+                else:
+                    output.insert(tk.END, f"Host: {host_ip} - NO ACTIVO\n")
+                output.see(tk.END)
+                output.update_idletasks()
+
+        threads = []
+        for host in network.hosts():
+            t = threading.Thread(target=check_host, args=(str(host),))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
 
         output.insert(tk.END, "\n--- DETALLES DE HOSTS ACTIVOS ---\n")
         output.see(tk.END)
 
-        for host in active_hosts:
-            output.insert(tk.END, f"\nHost: {host} - ACTIVO\n")
+        # Escaneo paralelo de puertos por cada host activo
+        host_threads = []
+
+        def scan_and_output(host):
             datos = scan_host(host)
-            for port, disponible in datos["puertos"].items():
-                estado = "Puerto activo" if disponible else "Puerto no disponible"
-                output.insert(tk.END, f"{ports[port]} ({port}) - {estado}\n")
-            output.insert(tk.END, f"OS - {datos['os']}\n")
-            output.see(tk.END)
-            output.update_idletasks()
+            with lock:
+                output.insert(tk.END, f"\nHost: {host} - ACTIVO\n")
+                for port, disponible in datos["puertos"].items():
+                    estado = "Puerto activo" if disponible else "Puerto no disponible"
+                    output.insert(tk.END, f"{ports[port]} ({port}) - {estado}\n")
+                output.insert(tk.END, f"OS - {datos['os']}\n")
+                output.see(tk.END)
+                output.update_idletasks()
+
+        for host in active_hosts:
+            t = threading.Thread(target=scan_and_output, args=(host,))
+            host_threads.append(t)
+            t.start()
+
+        for t in host_threads:
+            t.join()
 
         output.insert(tk.END, "\nEscaneo finalizado.\n")
         output.see(tk.END)
@@ -104,12 +125,14 @@ def scan_network(ip, mask, output):
         output.insert(tk.END, f"Error en el escaneo: {e}\n")
         output.see(tk.END)
 
+# Acción del botón
 def start_scan(ip_entry, mask_entry, output):
     ip = ip_entry.get()
     mask = mask_entry.get()
     output.delete("1.0", tk.END)
     threading.Thread(target=scan_network, args=(ip, mask, output)).start()
 
+# Interfaz gráfica
 def main_gui():
     window = tk.Tk()
     window.title("Escáner de Red")
@@ -126,8 +149,7 @@ def main_gui():
     mask_entry = tk.Entry(frame, width=20)
     mask_entry.grid(row=1, column=1, padx=5)
 
-    scan_button = tk.Button(frame, text="Scanner", command=lambda: start_scan(ip_entry, mask_entry, output),
-                            bg="#4CAF50", fg="white", padx=10, pady=5)
+    scan_button = tk.Button(frame, text="Scanner", command=lambda: start_scan(ip_entry, mask_entry, output), bg="#4CAF50", fg="white", padx=10, pady=5)
     scan_button.grid(row=0, column=2, rowspan=2, padx=10, pady=5)
 
     output = scrolledtext.ScrolledText(window, wrap=tk.WORD, width=90, height=25)
@@ -136,5 +158,3 @@ def main_gui():
     window.mainloop()
 
 main_gui()
-
-   
